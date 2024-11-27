@@ -1,0 +1,2 @@
+# Kelompok-1-sistem-kendali-V3
+PID CONTROL MOTOR DC ENCODER MENGGUNAKAN GUI 
