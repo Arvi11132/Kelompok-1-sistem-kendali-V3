@@ -1,0 +1,203 @@
+import sys
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QComboBox, QFrame, QGroupBox
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor, QPalette
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import serial
+import serial.tools.list_ports
+
+
+class EnhancedMainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Enhanced PID Controller")
+        self.setGeometry(100, 100, 700, 600)
+
+        self.serial_connection = None
+        self.timer = QTimer(self)
+
+        self.initUI()
+        self.init_serial_ports()
+
+    def initUI(self):
+        # Layout utama
+        layout = QVBoxLayout()
+
+        # Section: Connection Settings
+        connection_group = QGroupBox("Connection Settings")
+        connection_layout = QHBoxLayout()
+
+        connection_layout.addWidget(QLabel("Select COM Port:"))
+        self.com_combo = QComboBox()
+        connection_layout.addWidget(self.com_combo)
+
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.setStyleSheet("background-color: #00BFFF; color: white; font-weight: bold;")
+        self.connect_button.clicked.connect(self.connect_serial)
+        connection_layout.addWidget(self.connect_button)
+
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.setStyleSheet("background-color: #FF6347; color: white; font-weight: bold;")
+        self.disconnect_button.setEnabled(False)
+        self.disconnect_button.clicked.connect(self.disconnect_serial)
+        connection_layout.addWidget(self.disconnect_button)
+
+        connection_group.setLayout(connection_layout)
+        layout.addWidget(connection_group)
+
+        # Section: PID and Setpoint Configuration
+        pid_group = QGroupBox("PID and Setpoint Configuration")
+        pid_layout = QVBoxLayout()
+
+        # Kp, Ki, Kd, dan Setpoint
+        pid_layout.addWidget(self.create_labeled_input("Kp (Proportional):", "0.02", "kp_input"))
+        pid_layout.addWidget(self.create_labeled_input("Ki (Integral):", "0.00015", "ki_input"))
+        pid_layout.addWidget(self.create_labeled_input("Kd (Derivative):", "0", "kd_input"))
+        pid_layout.addWidget(self.create_labeled_input("Setpoint (RPM):", "50", "setpoint_input"))
+
+        pid_group.setLayout(pid_layout)
+        layout.addWidget(pid_group)
+
+        # Tombol untuk mengirim data
+        self.send_button = QPushButton("Send Data")
+        self.send_button.setStyleSheet("background-color: #32CD32; color: white; font-weight: bold;")
+        self.send_button.setEnabled(False)
+        self.send_button.clicked.connect(self.send_pid_setpoint)
+        layout.addWidget(self.send_button)
+
+        # Area grafik
+        self.plot_canvas = PlotCanvas(self, width=5, height=3)
+        layout.addWidget(self.plot_canvas)
+
+        # Informasi sistem
+        self.system_info_label = QLabel(
+            "System Performance Information\nRise Time: N/A    Settling Time: N/A    Overshoot: N/A"
+        )
+        self.system_info_label.setFrameStyle(QFrame.Panel | QFrame.Sunken)
+        self.system_info_label.setStyleSheet("background-color: #F0F0F0; padding: 10px;")
+        layout.addWidget(self.system_info_label)
+
+        self.setLayout(layout)
+
+    def create_labeled_input(self, label_text, default_value, attr_name):
+        """Helper untuk membuat input dengan label."""
+        layout = QVBoxLayout()
+        label = QLabel(label_text)
+        label.setStyleSheet("font-weight: bold;")
+        input_field = QLineEdit(default_value)
+        setattr(self, attr_name, input_field)
+        layout.addWidget(label)
+        layout.addWidget(input_field)
+        return QWidget().setLayout(layout)
+
+    def init_serial_ports(self):
+        """Mendeteksi dan menampilkan daftar port COM yang tersedia."""
+        ports = serial.tools.list_ports.comports()
+        self.com_combo.addItems([port.device for port in ports])
+
+    def connect_serial(self):
+        """Menghubungkan ke perangkat melalui port COM yang dipilih."""
+        port = self.com_combo.currentText()
+        if port:
+            try:
+                self.serial_connection = serial.Serial(port, 9600, timeout=1)
+                self.connect_button.setEnabled(False)
+                self.disconnect_button.setEnabled(True)
+                self.send_button.setEnabled(True)
+
+                # Mulai membaca data secara berkala
+                self.timer.timeout.connect(self.read_serial_data)
+                self.timer.start(100)  # Interval 100ms
+
+                print(f"Connected to {port}")
+            except Exception as e:
+                print(f"Failed to connect: {e}")
+
+    def disconnect_serial(self):
+        """Memutuskan koneksi serial."""
+        if self.serial_connection:
+            self.serial_connection.close()
+            self.serial_connection = None
+
+        self.connect_button.setEnabled(True)
+        self.disconnect_button.setEnabled(False)
+        self.send_button.setEnabled(False)
+        self.timer.stop()
+        print("Disconnected")
+
+    def send_pid_setpoint(self):
+        """Mengirim nilai PID dan setpoint ke perangkat."""
+        if self.serial_connection:
+            kp = self.kp_input.text()
+            ki = self.ki_input.text()
+            kd = self.kd_input.text()
+            setpoint = self.setpoint_input.text()
+
+            try:
+                # Kirim nilai PID
+                pid_command = f"PID:{kp},{ki},{kd}\n"
+                self.serial_connection.write(pid_command.encode())
+                print("Sent:", pid_command.strip())
+
+                # Kirim setpoint
+                setpoint_command = f"SET:{setpoint}\n"
+                self.serial_connection.write(setpoint_command.encode())
+                print("Sent:", setpoint_command.strip())
+            except Exception as e:
+                print(f"Failed to send data: {e}")
+
+    def read_serial_data(self):
+        """Membaca data dari perangkat dan memperbarui grafik."""
+        if self.serial_connection and self.serial_connection.in_waiting > 0:
+            try:
+                data = self.serial_connection.readline().decode().strip()
+                print("Received:", data)
+
+                # Update plot (simulasi data RPM)
+                if data.startswith("RPM:"):
+                    parts = data.split(",")
+                    rpm = float(parts[0].split(":")[1])
+                    setpoint = float(parts[1].split(":")[1])
+                    self.plot_canvas.update_plot(rpm, setpoint)
+            except Exception as e:
+                print(f"Error reading data: {e}")
+
+
+class PlotCanvas(FigureCanvas):
+    def __init__(self, parent=None, width=5, height=3, dpi=100):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super().__init__(fig)
+        self.setParent(parent)
+
+        self.rpm_data = []
+        self.setpoint_data = []
+
+    def update_plot(self, rpm, setpoint):
+        self.rpm_data.append(rpm)
+        self.setpoint_data.append(setpoint)
+
+        # Simpan hanya 50 data terakhir
+        if len(self.rpm_data) > 50:
+            self.rpm_data.pop(0)
+            self.setpoint_data.pop(0)
+
+        # Perbarui plot
+        self.axes.clear()
+        self.axes.plot(self.rpm_data, label="Actual RPM", color="blue")
+        self.axes.plot(self.setpoint_data, label="Setpoint", color="orange", linestyle="--")
+        self.axes.legend()
+        self.axes.set_title("RPM vs Time")
+        self.axes.set_xlabel("Time (steps)")
+        self.axes.set_ylabel("RPM")
+        self.draw()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    main_window = EnhancedMainWindow()
+    main_window.show()
+    sys.exit(app.exec_())
